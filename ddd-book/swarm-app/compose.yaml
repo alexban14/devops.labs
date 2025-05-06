@@ -1,6 +1,3 @@
-# Un-comment the version field if you get an 'unsupported Compose file version: 1.0' ERROR
-
-#version: '3.8'
 networks:
   counter-net:
     driver: overlay
