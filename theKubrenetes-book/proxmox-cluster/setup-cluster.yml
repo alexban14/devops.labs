@@ -1,0 +1,12 @@
+---
+- name: Import prerequisites playbook
+  ansible.builtin.import_playbook: playbooks/01-prerequisites.yml
+
+- name: Import Kubernetes installation playbook
+  ansible.builtin.import_playbook: playbooks/02-kube-install.yml
+
+- name: Import Control Plane setup playbook
+  ansible.builtin.import_playbook: playbooks/03-control-plane.yml
+
+- name: Import Worker Nodes setup playbook
+  ansible.builtin.import_playbook: playbooks/04-workers.yml

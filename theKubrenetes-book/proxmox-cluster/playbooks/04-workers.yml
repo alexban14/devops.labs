@@ -1,0 +1,9 @@
+---
+- name: 4. Configure Worker Nodes
+  hosts: worker_nodes
+  become: true
+  tasks:
+    - name: Join worker nodes to the cluster
+      ansible.builtin.command: "{{ hostvars[groups['control_plane'][0]]['worker_join_command'] }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
