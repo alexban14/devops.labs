@@ -5,17 +5,13 @@
   tasks:
     - name: Initialize the cluster on the first control plane node
       ansible.builtin.command: >
-        kubeadm init --pod-network-cidr={{ pod_network_cidr }} --control-plane-endpoint={{ apiserver_endpoint }} --upload-certs
+        kubeadm init --pod-network-cidr={{ pod_network_cidr }} 
+        --control-plane-endpoint={{ apiserver_endpoint }} 
+        --upload-certs
       args:
         creates: /etc/kubernetes/admin.conf
       when: inventory_hostname == groups['control_plane'][0]
       register: kubeadm_init
-
-    - name: Store join commands
-      ansible.builtin.set_fact:
-        control_plane_join_command: "{{ kubeadm_init.stdout | regex_search('kubeadm join.*--control-plane.*') }}"
-        worker_join_command: "{{ kubeadm_init.stdout | regex_search('kubeadm join.*--token.*') }}"
-      when: inventory_hostname == groups['control_plane'][0]
 
     - name: Create .kube directory for root user
       ansible.builtin.file:
@@ -42,8 +38,51 @@
         KUBECONFIG: /etc/kubernetes/admin.conf
       when: inventory_hostname == groups['control_plane'][0]
 
+    # Generate new join commands (more reliable approach)
+    - name: Generate control plane join command
+      ansible.builtin.shell: |
+        kubeadm token create --print-join-command
+      register: worker_join_command_result
+      when: inventory_hostname == groups['control_plane'][0]
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Get certificate key for control plane join
+      ansible.builtin.shell: |
+        kubeadm init phase upload-certs --upload-certs | tail -1
+      register: certificate_key_result
+      when: inventory_hostname == groups['control_plane'][0]
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Set join command facts
+      ansible.builtin.set_fact:
+        worker_join_command: "{{ worker_join_command_result.stdout }}"
+        certificate_key: "{{ certificate_key_result.stdout }}"
+        control_plane_join_command: "{{ worker_join_command_result.stdout }} --control-plane --certificate-key {{ certificate_key_result.stdout }}"
+      when: inventory_hostname == groups['control_plane'][0]
+
     - name: Join other control plane nodes
       ansible.builtin.command: "{{ hostvars[groups['control_plane'][0]]['control_plane_join_command'] }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
+      when: 
+        - inventory_hostname != groups['control_plane'][0]
+        - hostvars[groups['control_plane'][0]]['control_plane_join_command'] is defined
+
+    - name: Create .kube directory for root user on additional control plane nodes
+      ansible.builtin.file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+      when: inventory_hostname != groups['control_plane'][0]
+
+    - name: Copy admin.conf to additional control plane nodes
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0644'
       when: inventory_hostname != groups['control_plane'][0]

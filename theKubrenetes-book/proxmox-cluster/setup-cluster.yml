@@ -10,3 +10,6 @@
 
 - name: Import Worker Nodes setup playbook
   ansible.builtin.import_playbook: playbooks/04-workers.yml
+
+- name: Import Validate Cluster playbook
+  ansible.builtin.import_playbook: playbooks/05-validate-cluster.yml
