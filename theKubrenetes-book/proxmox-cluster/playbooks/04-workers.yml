@@ -3,6 +3,40 @@
   hosts: worker_nodes
   become: true
   tasks:
+    - name: Check if worker node is already in cluster
+      ansible.builtin.shell: |
+        kubectl get nodes {{ inventory_hostname }} --no-headers 2>/dev/null | wc -l
+      register: worker_node_exists
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: hostvars[groups['control_plane'][0]]['worker_join_command'] is defined
+
+    - name: Remove existing worker node from cluster if it exists
+      ansible.builtin.command: |
+        kubectl delete node {{ inventory_hostname }}
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: 
+        - hostvars[groups['control_plane'][0]]['worker_join_command'] is defined
+        - worker_node_exists.stdout|int > 0
+      ignore_errors: true
+
+    - name: Reset kubeadm on worker node if it was previously joined
+      ansible.builtin.command: kubeadm reset --force
+      when: 
+        - hostvars[groups['control_plane'][0]]['worker_join_command'] is defined
+        - worker_node_exists.stdout|int > 0
+
+    - name: Restart containerd after reset on worker
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+      when: 
+        - hostvars[groups['control_plane'][0]]['worker_join_command'] is defined
+        - worker_node_exists.stdout|int > 0
+
     - name: Join worker nodes to the cluster
       ansible.builtin.command: "{{ hostvars[groups['control_plane'][0]]['worker_join_command'] }}"
       args:
