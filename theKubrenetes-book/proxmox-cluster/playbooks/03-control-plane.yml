@@ -9,11 +9,8 @@
 
     - name: Initialize the cluster on the first control plane node
       ansible.builtin.command: >
-        kubeadm init --pod-network-cidr={{ pod_network_cidr }} 
-        --control-plane-endpoint={{ apiserver_endpoint }}:6443
-        --upload-certs
-      args:
-        creates: /etc/kubernetes/admin.conf
+        kubeadm init --pod-network-cidr={{ pod_network_cidr }}
+        --apiserver-advertise-address={{ apiserver_endpoint }}
       when: inventory_hostname == groups['control_plane'][0]
       register: kubeadm_init
 
@@ -43,16 +40,16 @@
 
     # Wait for API server to be ready
     - name: Wait for Kubernetes API server to be ready
-      ansible.builtin.uri:
-        url: "https://{{ apiserver_endpoint }}:6443/healthz"
-        method: GET
-        validate_certs: false
-        status_code: 200
+      ansible.builtin.shell:
+        cmd: "kubectl get --raw='/healthz'"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
       register: api_server_check
-      until: api_server_check.status == 200
+      until: api_server_check.stdout == 'ok'
       retries: 30
       delay: 10
       when: inventory_hostname == groups['control_plane'][0]
+      changed_when: false
 
     - name: Install Calico CNI
       ansible.builtin.command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
@@ -64,7 +61,6 @@
       retries: 3
       delay: 10
 
-    # Wait for Calico pods to be ready
     - name: Wait for Calico pods to be ready
       ansible.builtin.shell: |
         kubectl get pods -n kube-system -l k8s-app=calico-node --no-headers | grep -v Running | wc -l
@@ -76,7 +72,6 @@
         KUBECONFIG: /etc/kubernetes/admin.conf
       when: inventory_hostname == groups['control_plane'][0]
 
-    # Generate new join commands
     - name: Generate worker join command
       ansible.builtin.shell: |
         kubeadm token create --print-join-command
@@ -88,100 +83,14 @@
       delay: 5
       until: worker_join_command_result.rc == 0
 
-    - name: Get certificate key for control plane join
-      ansible.builtin.shell: |
-        kubeadm init phase upload-certs --upload-certs | tail -1
-      register: certificate_key_result
-      when: inventory_hostname == groups['control_plane'][0]
-      environment:
-        KUBECONFIG: /etc/kubernetes/admin.conf
-      retries: 3
-      delay: 5
-      until: certificate_key_result.rc == 0
-
     - name: Set join command facts
       ansible.builtin.set_fact:
         worker_join_command: "{{ worker_join_command_result.stdout }}"
-        certificate_key: "{{ certificate_key_result.stdout }}"
-        control_plane_join_command: "{{ worker_join_command_result.stdout }} --control-plane --certificate-key {{ certificate_key_result.stdout }}"
       when: inventory_hostname == groups['control_plane'][0]
 
-    - name: Check if node is already in cluster
-      ansible.builtin.shell: |
-        kubectl get nodes {{ inventory_hostname }} --no-headers 2>/dev/null | wc -l
-      register: node_exists
-      delegate_to: "{{ groups['control_plane'][0] }}"
-      environment:
-        KUBECONFIG: /etc/kubernetes/admin.conf
-      when: 
-        - inventory_hostname != groups['control_plane'][0]
-        - hostvars[groups['control_plane'][0]]['control_plane_join_command'] is defined
-
-    - name: Remove existing node from cluster if it exists
-      ansible.builtin.command: |
-        kubectl delete node {{ inventory_hostname }}
-      delegate_to: "{{ groups['control_plane'][0] }}"
-      environment:
-        KUBECONFIG: /etc/kubernetes/admin.conf
-      when: 
-        - inventory_hostname != groups['control_plane'][0]
-        - hostvars[groups['control_plane'][0]]['control_plane_join_command'] is defined
-        - node_exists.stdout|int > 0
-      ignore_errors: true
-
-    - name: Reset kubeadm on node if it was previously joined
-      ansible.builtin.command: kubeadm reset --force
-      when: 
-        - inventory_hostname != groups['control_plane'][0]
-        - hostvars[groups['control_plane'][0]]['control_plane_join_command'] is defined
-        - node_exists.stdout|int > 0
-
-    - name: Clean up CNI configuration
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/cni/net.d
-        - /opt/cni/bin
-      when: 
-        - inventory_hostname != groups['control_plane'][0]
-        - hostvars[groups['control_plane'][0]]['control_plane_join_command'] is defined
-        - node_exists.stdout|int > 0
-
-    - name: Restart containerd after reset
-      ansible.builtin.systemd:
-        name: containerd
-        state: restarted
-      when: 
-        - inventory_hostname != groups['control_plane'][0]
-        - hostvars[groups['control_plane'][0]]['control_plane_join_command'] is defined
-        - node_exists.stdout|int > 0
-
-    - name: Join other control plane nodes
-      ansible.builtin.command: "{{ hostvars[groups['control_plane'][0]]['control_plane_join_command'] }}"
-      when: 
-        - inventory_hostname != groups['control_plane'][0]
-        - hostvars[groups['control_plane'][0]]['control_plane_join_command'] is defined
-      register: control_plane_join_result
-      until: control_plane_join_result.rc == 0
-      retries: 3
-      delay: 10
-
-    - name: Create .kube directory for root user on additional control plane nodes
-      ansible.builtin.file:
-        path: /root/.kube
-        state: directory
-        mode: '0755'
-      when: inventory_hostname != groups['control_plane'][0]
-
-    - name: Copy admin.conf to additional control plane nodes
-      ansible.builtin.copy:
+    - name: Fetch admin.conf to local machine
+      ansible.builtin.fetch:
         src: /etc/kubernetes/admin.conf
-        dest: /root/.kube/config
-        remote_src: true
-        owner: root
-        group: root
-        mode: '0644'
-      when: 
-        - inventory_hostname != groups['control_plane'][0]
-        - control_plane_join_result is succeeded
+        dest: "{{ inventory_dir }}/admin.conf"
+        flat: yes
+      when: inventory_hostname == groups['control_plane'][0]
