@@ -1,0 +1,85 @@
+---
+- name: 6. Install Tailscale Kubernetes Operator
+  hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Check if Helm is installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/helm
+      register: helm_stat
+
+    - name: Install Helm
+      when: not helm_stat.stat.exists
+      block:
+        - name: Download Helm installation script
+          ansible.builtin.get_url:
+            url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+            dest: /tmp/get_helm.sh
+            mode: '0755'
+
+        - name: Run Helm installation script
+          ansible.builtin.command:
+            cmd: /tmp/get_helm.sh
+
+    - name: Uninstall existing Tailscale operator (if any)
+      ansible.builtin.command:
+        cmd: helm uninstall tailscale-operator --namespace=tailscale
+      register: helm_uninstall
+      failed_when: "helm_uninstall.rc != 0 and 'release: not found' not in helm_uninstall.stderr"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Delete old Tailscale auth secret (if any)
+      ansible.builtin.command:
+        cmd: kubectl delete secret tailscale-auth --namespace=tailscale
+      register: secret_delete
+      failed_when: "secret_delete.rc != 0 and 'not found' not in secret_delete.stderr"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Create tailscale namespace
+      ansible.builtin.command:
+        cmd: kubectl create namespace tailscale
+      register: namespace_create
+      failed_when: "namespace_create.rc != 0 and 'already exists' not in namespace_create.stderr"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Add Tailscale repository
+      ansible.builtin.command:
+        cmd: helm repo add tailscale https://pkgs.tailscale.com/helmcharts
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Update Helm repositories
+      ansible.builtin.command:
+        cmd: helm repo update
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Create Tailscale API secret
+      ansible.builtin.command:
+        cmd: >
+          kubectl create secret generic tailscale-auth
+          --namespace=tailscale
+          --from-literal=authkey=tskey-auth-kFFaSDX4p321CNTRL-LdL82tS9aWHmo7paRs36WHSAVeg8ByFQ1
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Create Helm values file for Tailscale
+      ansible.builtin.copy:
+        dest: /tmp/tailscale-values.yaml
+        content: |
+          operator:
+            authKey:
+              secretName: tailscale-auth
+              secretKey: authkey
+
+    - name: Install Tailscale operator
+      ansible.builtin.command:
+        cmd: >
+          helm install tailscale-operator tailscale/tailscale-operator
+          --namespace=tailscale
+          -f /tmp/tailscale-values.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
