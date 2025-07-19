@@ -94,3 +94,28 @@
         dest: "{{ inventory_dir }}/admin.conf"
         flat: yes
       when: inventory_hostname == groups['control_plane'][0]
+
+    - name: Rename cluster in kubeconfig
+      ansible.builtin.command: >
+        kubectl config rename-context
+        kubernetes-admin@kubernetes k8s-dev-cluster@proxmox
+        --kubeconfig="{{ inventory_dir }}/admin.conf"
+      delegate_to: localhost
+      become: false
+      when: inventory_hostname == groups['control_plane'][0]
+
+    - name: Rename user in kubeconfig
+      ansible.builtin.command: >
+        sed -i'' -e 's/name: kubernetes-admin/name: k8s-dev-cluster@proxmox/' -e 's/user: kubernetes-admin/user: k8s-dev-cluster@proxmox/' "{{ inventory_dir }}/admin.conf"
+      delegate_to: localhost
+      become: false
+      when: inventory_hostname == groups['control_plane'][0]
+
+    - name: Set current context in kubeconfig
+      ansible.builtin.command: >
+        kubectl config use-context
+        k8s-dev-cluster@proxmox
+        --kubeconfig="{{ inventory_dir }}/admin.conf"
+      delegate_to: localhost
+      become: false
+      when: inventory_hostname == groups['control_plane'][0]
