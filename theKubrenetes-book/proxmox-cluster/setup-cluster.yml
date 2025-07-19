@@ -13,3 +13,6 @@
 
 - name: Import Validate Cluster playbook
   ansible.builtin.import_playbook: playbooks/05-validate-cluster.yml
+
+- name: Import Tailscale Operator playbook
+  ansible.builtin.import_playbook: playbooks/06-tailscale-operator.yml

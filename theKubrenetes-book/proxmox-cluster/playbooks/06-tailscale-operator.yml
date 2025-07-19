@@ -1,0 +1,107 @@
+---
+- name: 6. Install Tailscale Kubernetes Operator
+  hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Check if required variables are defined
+      ansible.builtin.fail:
+        msg: "tailscale_oauth_client_id and tailscale_oauth_client_secret must be defined"
+      when: tailscale_oauth_client_id is not defined or tailscale_oauth_client_secret is not defined
+    
+    - name: Check if Helm is installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/helm
+      register: helm_stat
+
+    - name: Install Helm
+      when: not helm_stat.stat.exists
+      block:
+        - name: Download Helm installation script
+          ansible.builtin.get_url:
+            url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+            dest: /tmp/get_helm.sh
+            mode: '0755'
+        - name: Run Helm installation script
+          ansible.builtin.command:
+            cmd: /tmp/get_helm.sh
+
+    - name: Uninstall existing Tailscale operator (if any)
+      ansible.builtin.command:
+        cmd: helm uninstall tailscale-operator --namespace=tailscale
+      register: helm_uninstall
+      failed_when: "helm_uninstall.rc != 0 and 'release: not found' not in helm_uninstall.stderr"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Delete tailscale namespace (clean slate)
+      ansible.builtin.command:
+        cmd: kubectl delete namespace tailscale --ignore-not-found=true
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Wait for namespace deletion to complete
+      ansible.builtin.command:
+        cmd: kubectl get namespace tailscale
+      register: ns_check
+      failed_when: false
+      until: ns_check.rc != 0
+      retries: 30
+      delay: 2
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Add Tailscale repository
+      ansible.builtin.command:
+        cmd: helm repo add tailscale https://pkgs.tailscale.com/helmcharts
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Update Helm repositories
+      ansible.builtin.command:
+        cmd: helm repo update
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Install Tailscale operator with OAuth credentials
+      ansible.builtin.command:
+        cmd: >
+          helm upgrade --install tailscale-operator tailscale/tailscale-operator
+          --namespace=tailscale
+          --create-namespace
+          --set-string oauth.clientId="{{ tailscale_oauth_client_id }}"
+          --set-string oauth.clientSecret="{{ tailscale_oauth_client_secret }}"
+          --wait
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Wait for Tailscale operator pod to be ready
+      ansible.builtin.shell: |
+        kubectl get pods -n tailscale -l app=operator --no-headers | grep -v Running | wc -l
+      register: operator_pods_not_ready
+      until: operator_pods_not_ready.stdout == "0"
+      retries: 30
+      delay: 10
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Verify operator installation
+      ansible.builtin.command:
+        cmd: kubectl get pods -n tailscale
+      register: tailscale_pods
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display Tailscale operator status
+      ansible.builtin.debug:
+        msg: "{{ tailscale_pods.stdout_lines }}"
+
+    - name: Get operator logs (if successful)
+      ansible.builtin.shell: |
+        kubectl logs -n tailscale -l app=operator --tail=10
+      register: operator_logs
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display operator logs
+      ansible.builtin.debug:
+        msg: "{{ operator_logs.stdout_lines }}"
